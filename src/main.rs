@@ -6,6 +6,7 @@ use std::{env, fmt, fs};
 use std::fmt::{format, Formatter as FmtFormatter};
 use goblin::elf::Elf;
 use std::time::Instant;
+use clap::Parser;
 
 mod log {
     use std::fmt;
@@ -390,7 +391,7 @@ fn disass_vaddr(regions: &[XRegion], vaddr: u64, num_instructions: usize, indent
     }
 }
 
-fn finder(f_path: &str, target: &[u8]) -> Result<(), Box<dyn Error>> {
+fn finder(f_path: &str, target: &[u8],is_disass: bool) -> Result<(), Box<dyn Error>> {
     let st = Instant::now();
     match x_regions(f_path) {
         Ok(xs) => {
@@ -406,8 +407,10 @@ fn finder(f_path: &str, target: &[u8]) -> Result<(), Box<dyn Error>> {
                     print!(" Vaddr: 0x{:x}", m.vaddr);
                     println!();
 
-                    disass_vaddr(&xs, m.vaddr, 7, 0);
-                    println!();
+                    if is_disass {
+                        disass_vaddr(&xs, m.vaddr, 7, 0);
+                        println!();
+                    }
                 }
             }
             Ok(())
@@ -418,51 +421,32 @@ fn finder(f_path: &str, target: &[u8]) -> Result<(), Box<dyn Error>> {
     }
 }
 
-#[derive(Debug)]
-struct ArgError {
-    message: String,
-}
+#[derive(Parser)]
+#[command(version)]
+struct Opt {
+    #[arg(short = 'f', long = "file")]
+    file: String,
 
-impl fmt::Display for ArgError {
-    fn fmt(&self, f: &mut FmtFormatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
+    #[arg(short = 'a', long = "asm")]
+    asm: String,
 
-impl Error for ArgError {}
+    #[arg(short = 'n', long = "no-disass")]
+    disass: bool,
 
-fn arg_parser() -> Result<Vec<String>, Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        return Err(Box::new(ArgError {
-            message: format!("Usage: {} <ELF> <Assembly>", args[0])
-        }));
-    }
-
-    Ok(args[1..].to_vec())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    match arg_parser() {
-        Ok(args) => {
-            let elf = &args[0];
-            let asm = &args[1];
-
-            let mc = assemble(asm)?;
-            log::infoNL("Generated Machine Code: ");
-            for byte in &mc {
-                print!("{:02x}", byte);
-            }
-            println!("");
-
-            finder(elf, &mc)?;
-
-            Ok(())
-        },
-
-        Err(e) => {
-            log::error(format!("Err: {}", e));
-            return Err(e);
-        }
+    let opt = Opt::parse();
+    let asm = opt.asm;
+    let elf = opt.file;
+    let mc = assemble(&asm)?;
+    log::infoNL("Generated Machine Code: ");
+    for byte in &mc {
+        print!("{:02x}", byte);
     }
+    println!("");
+
+    finder(&elf, &mc, !opt.disass)?;
+
+    Ok(())
 }

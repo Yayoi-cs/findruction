@@ -9,3 +9,7 @@ features = ["code_asm"]
 
 [dependencies.goblin]
 version = "0.9.3"
+
+[dependencies.clap]
+version = "4.5.37"
+features = ["derive"]
