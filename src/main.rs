@@ -1,8 +1,9 @@
 use iced_x86::code_asm::*;
+use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter, Instruction};
 use std::collections::HashMap;
 use std::error::Error;
 use std::{env, fmt, fs};
-use std::fmt::{format, Formatter};
+use std::fmt::{format, Formatter as FmtFormatter};
 use goblin::elf::Elf;
 use std::time::Instant;
 
@@ -14,6 +15,7 @@ mod log {
     const COLOR_GREEN: &str = "\x1b[0;32m";
     const COLOR_YELLOW: &str = "\x1b[0;33m";
     const COLOR_CYAN: &str = "\x1b[0;35m";
+    const COLOR_BLUE: &str = "\x1b[0;34m";
 
     pub fn info<T: fmt::Display>(msg: T) {
         println!("{}[*] {}{}", COLOR_CYAN, msg, COLOR_RESET);
@@ -40,6 +42,10 @@ mod log {
     }
     pub fn warningNL<T: fmt::Display>(msg: T) {
         print!("{}[!] {}{}", COLOR_YELLOW, msg, COLOR_RESET);
+    }
+
+    pub fn code<T: fmt::Display>(msg: T) {
+        println!("{}    {}{}", COLOR_BLUE, msg, COLOR_RESET);
     }
 }
 
@@ -208,10 +214,15 @@ struct XRegion {
     data: Vec<u8>,
 }
 
+struct DisasmContext<'a> {
+    regions: &'a [XRegion],
+}
+
 struct PatternMatch {
     file_offset: u64,
     vaddr: u64,
     region_index: usize,
+    following_bytes: Vec<u8>,
 }
 
 fn x_regions(fpath: &str) -> Result<Vec<XRegion>, Box<dyn Error>> {
@@ -285,20 +296,98 @@ fn bm_search(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
 
 fn f_pat(regions: &[XRegion], pattern: &[u8]) -> Vec<PatternMatch> {
     let mut matches = Vec::new();
+    const FOLLOW_BYTES: usize = 64;
 
     for (region_index, region) in regions.iter().enumerate() {
         let region_matches = bm_search(&region.data, pattern);
 
         for offset in region_matches {
+            let start = offset;
+            let end = std::cmp::min(offset + FOLLOW_BYTES, region.data.len());
+
             matches.push(PatternMatch {
                 file_offset: region.offset_s + offset as u64,
                 vaddr: region.vaddr + offset as u64,
                 region_index,
+                following_bytes: region.data[start..end].to_vec(),
             });
         }
     }
 
     matches
+}
+
+fn disass(bytes: &[u8], base_address: u64, num_instructions: usize) -> Vec<(u64, String, Option<u64>)> {
+    let mut decoder = Decoder::with_ip(64, bytes, base_address, DecoderOptions::NONE);
+    let mut formatter = IntelFormatter::new();
+    let mut instructions = Vec::new();
+    let mut instruction = Instruction::default();
+    let mut output = String::new();
+
+    for _ in 0..num_instructions {
+        if !decoder.can_decode() {
+            break;
+        }
+
+        decoder.decode_out(&mut instruction);
+        output.clear();
+        formatter.format(&instruction, &mut output);
+
+        let jump_target = if instruction.is_jmp_short_or_near() ||
+                             instruction.is_jcc_short_or_near() ||
+                             instruction.is_call_near() {
+            Some(instruction.near_branch64())
+        } else {
+            None
+        };
+
+        instructions.push((instruction.ip(), output.clone(), jump_target));
+    }
+
+    instructions
+}
+
+fn vaddr2offset(regions: &[XRegion], vaddr: u64) -> Option<(usize, u64)> {
+    for (index, region) in regions.iter().enumerate() {
+        if vaddr >= region.vaddr && vaddr < region.vaddr + region.size {
+            let offset = vaddr - region.vaddr;
+            return Some((index, offset));
+        }
+    }
+    None
+}
+
+fn disass_vaddr(regions: &[XRegion], vaddr: u64, num_instructions: usize, indent_level: usize) {
+    if let Some((region_index, offset)) = vaddr2offset(regions, vaddr) {
+        let region = &regions[region_index];
+        if offset < region.data.len() as u64 {
+            let start = offset as usize;
+            let end = std::cmp::min(start + 64, region.data.len());
+            let bytes = &region.data[start..end];
+
+            let instructions = disass(bytes, vaddr, num_instructions);
+            let indent = "    ".repeat(indent_level);
+            let mut flag = false;
+            for (addr, asm, jump_target) in instructions {
+                if !flag && indent_level >= 1 {
+                    flag = true;
+                    let first = "    ".repeat(indent_level-1);
+                    log::code(format!("{}└-->0x{:016x}: {}", first, addr, asm));
+                } else {
+                    log::code(format!("{}0x{:016x}: {}", indent, addr, asm));
+                }
+
+                if let Some(target) = jump_target {
+                    if indent_level < 2 {
+                        disass_vaddr(regions, target, 3, indent_level + 1);
+                    }
+                }
+            }
+        }
+    } else {
+        let indent = "    ".repeat(indent_level);
+        log::warning(format!("{}invalid address 0x{:x}", indent, vaddr));
+    }
 }
 
 fn finder(f_path: &str, target: &[u8]) -> Result<(), Box<dyn Error>> {
@@ -312,9 +401,13 @@ fn finder(f_path: &str, target: &[u8]) -> Result<(), Box<dyn Error>> {
                 log::warning("Nothing..");
             } else {
                 for (i, m) in fp.iter().enumerate() {
-                    log::success(format!("Instr #{}/{}", i + 1, fp.len()));
-                    println!("\tOffset: 0x{:x}", m.file_offset);
-                    println!("\tVaddr:  0x{:x}", m.vaddr);
+                    log::successNL(format!("Instr #{}/{}", i + 1, fp.len()));
+                    print!(" Offset: 0x{:x}", m.file_offset);
+                    print!(" Vaddr: 0x{:x}", m.vaddr);
+                    println!();
+
+                    disass_vaddr(&xs, m.vaddr, 7, 0);
+                    println!();
                 }
             }
             Ok(())
@@ -331,7 +424,7 @@ struct ArgError {
 }
 
 impl fmt::Display for ArgError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut FmtFormatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)
     }
 }
