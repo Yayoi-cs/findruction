@@ -1,0 +1,11 @@
+[package]
+name = "findruction"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.iced-x86]
+version = "1.21.0"
+features = ["code_asm"]
+
+[dependencies.goblin]
+version = "0.9.3"
