@@ -4,7 +4,15 @@ findruction is used for find arbitrary instructions from a large binary such as 
 
 ## usage
 ```shell
-findruction <elf> <assembly>
+$ findruction --help
+Usage: findruction [OPTIONS] --file <FILE> --asm <ASM>
+
+Options:
+  -f, --file <FILE>  
+  -a, --asm <ASM>    
+  -n, --no-disass    
+  -h, --help         Print help
+  -V, --version      Print version
 ```
 
 ## install
@@ -12,13 +20,13 @@ findruction <elf> <assembly>
 git clone https://github.com/Yayoi-cs/findruction
 cd findruction
 cargo build --release
-echo "export PATH=$PATH:$(pwd)/target/release/"
+echo "export PATH=$PATH:$(pwd)/target/release/" >> ~/.bashrc
 ```
 
 ## example
 
 ```shell
-$ findruction vmlinux "swapgs;"
+$ findruction -f vmlinux -a "swapgs;"
 [+] swapgs
 [*] Generated Machine Code: 0f01f8
 [*] Finish process in 48.80ms
